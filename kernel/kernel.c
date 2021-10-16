@@ -1,6 +1,7 @@
 #include "../cpu/isr.h"
 #include "../drivers/screen.h"
 #include "kernel.h"
+#include "filesystem.h"
 #include "../drivers/ata.h"
 #include "../libc/string.h"
 #include "../libc/mem.h"
@@ -20,8 +21,11 @@ void kernel_main() {
     initialize_heap(0x200000);
     kprint_at("Initializing ata... ", 0, 5);
     initialize_ata();
+    kprint_color(TEAL_TEXT);
+    kprint_at("Initializing filesystem... ", 0, 6);
+    init_filesystem();
     kprint_color(GREEN_TEXT);
-    kprint_at("Initialized! ", 0, 6); 
+    kprint_at("Initialized! ", 0, 7); 
     kprint_color(DGRAY_TEXT);
     kprint("Type END to exit");
     kprint_color(WHITE_ON_BLACK);
@@ -76,11 +80,14 @@ void parse_shell_command(char* input)
     {
     	int lba = stoi(input+6);
     	
-    	uint8_t sectors = 2;
+    	uint8_t sectors = 1;
     	uint8_t* buf = kmalloc(512 * sectors);
     	lba_read(lba, sectors, buf);
     	kfree(buf);
-    	
+    }
+    else if (strcmp(input, "ls") == 0)
+    {
+    	ls();
     }
 }
 
