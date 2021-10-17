@@ -32,7 +32,7 @@ void* findNextFree(void* ptr, size_t nsize)
 	
 	if (next == 0) return ptr;
 	
-	if (size == 0 && next - ptr > nsize) return ptr;	
+	if (size == 0 && next - ptr > nsize + 12) return ptr;	
 	
 	return findNextFree(next, nsize);
 }
@@ -41,14 +41,18 @@ void* kmalloc(size_t size)
 {	
 	void* free_mem_addr = findNextFree((void*)(heap_begin + 12), size);
 	
-	void* oldNext = (void*)(free_mem_addr-8);
+	
+	uint32_t oldNext = *(uint32_t*)(free_mem_addr-8);
 	
 	*(size_t*)(free_mem_addr-12) = size;
 	*(uint32_t*)(free_mem_addr-8) = (uint32_t)(free_mem_addr + size + 12);
 	
+	
 	//*(size_t*)(free_mem_addr+size+4) = 0;
-	*(uint32_t*)(free_mem_addr+size+8) = (uint32_t)oldNext;
-	*(uint32_t*)(free_mem_addr+size+12) = (uint32_t)(free_mem_addr);
+	
+	*(uint32_t*)(free_mem_addr+size+4) = oldNext;
+	*(uint32_t*)(free_mem_addr+size+8) = (uint32_t)(free_mem_addr);
+	
 	
 	heap_size += size + 12;
 	memset(free_mem_addr, 0, size); //clean up leftovers
@@ -70,18 +74,57 @@ void kfree(void* ptr)
 	size_t nsize = *(size_t*)(next-12);
 	size_t psize = *(size_t*)(prev-12);
 	
+	
 	if (nsize == 0)
 	{
 		*(uint32_t*)(ptr-8) = *(uint32_t*)(next-8);
+		
+		*(uint32_t*)(next-8) = 0x0;
+		*(uint32_t*)(next-4) = 0x0;
 	}
 	
 	if (psize == 0)
 	{
 		*(uint32_t*)(next-4) = (uint32_t)(prev);
-		*(uint32_t*)(prev-8) = (uint32_t)(next);
+		*(uint32_t*)(prev-8) = *(uint32_t*)(ptr-8);
 	}
 	
 	heap_size -= (freedSize + 12);
+}
+
+void* krealloc(void* ptr, size_t size)
+{
+	size_t curSize = *(size_t*)(ptr-12);
+	
+	if (size < curSize)
+	{
+		*(size_t*)(ptr-12) = size;
+		return ptr;
+	}
+	
+	void* next = (void*)*(uint32_t*)(ptr-8);
+	size_t nsize = *(size_t*)(next-12);
+	
+	while (next != 0x0 && nsize == 0)
+	{
+		next = (void*)*(uint32_t*)(next-8);
+		nsize = *(size_t*)(next-12);
+	}
+	
+	if (next == 0x0 || next - ptr > size + 12)
+	{
+		*(size_t*)(ptr-12) = size;
+		*(size_t*)(ptr-8) += size - curSize;
+		
+		*(uint32_t*)(ptr+size+4) = (uint32_t)next;
+		*(uint32_t*)(ptr+size+8) = (uint32_t)(ptr);
+		return ptr;
+	}
+	
+	void* newp = kmalloc(size);
+	memcpy(ptr, newp, size);
+	kfree(ptr);
+	return newp;
 }
 
 #ifdef HEAP_DEBUG
@@ -112,6 +155,7 @@ void dump_blocks(void* block)
 	kprint(prevstr);
 	kprint(" ");
 	
+	/*
 	kprint_color(GRAY_TEXT);
 	for (size_t i = 0; i < size; i++)
 	{
@@ -120,6 +164,7 @@ void dump_blocks(void* block)
 		kprint(hexstr);
 		kprint(" ");
 	}
+	*/
 	
 	if (next != 0) dump_blocks(next);
 }
@@ -127,7 +172,7 @@ void dump_blocks(void* block)
 void dump_heap()
 {
 	
-	clear_screen();
+	//clear_screen();
 	char hsize[16] = "";
 	int_to_ascii(heap_size, hsize);
 	kprint("Heap size: ");

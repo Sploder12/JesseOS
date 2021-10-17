@@ -98,7 +98,9 @@ uint8_t ata_identify(uint8_t bus, uint8_t drive)
 	return 0;
 }
 
-void lba_read_one(uint32_t lba, uint8_t* buffer)
+//read and write are VERY similar
+//only thing that really changes is direction of buffer and command
+void lba_init_one(uint32_t lba)
 {
 	uint8_t drive =  0xE0;
 	port_byte_out(io_base + ATA_DRIVE_HEAD_REG, drive | (uint8_t)(lba >> 23 & 0x0f)); //select the drive
@@ -110,6 +112,12 @@ void lba_read_one(uint32_t lba, uint8_t* buffer)
 	port_byte_out(io_base + ATA_SECTOR_REG, (uint8_t)lba);
 	port_byte_out(io_base + ATA_CYLINDER_LOW_REG, (uint8_t)(lba >> 8));
 	port_byte_out(io_base + ATA_CYLINDER_HIGH_REG, (uint8_t)(lba >> 16));
+	
+}
+
+void lba_read_one(uint32_t lba, uint8_t* buffer)
+{
+	lba_init_one(lba);
 	
 	port_byte_out(io_base + ATA_CMD_REG, ATA_CMD_READ_PIO); //Read with retry
 	
@@ -132,6 +140,41 @@ void lba_read(uint32_t lba, uint32_t sectors, uint8_t* buffer)
 	for (uint32_t i = 0; i < sectors; i++)
 	{
 		lba_read_one(lba + i, buffer);
+		if (timeout > TIMEOUT)
+		{
+			i--; //retry on timeout
+		}
+		else
+		{
+			buffer += 512;
+		}
+	}
+}
+
+void lba_write_one(uint32_t lba, uint8_t* buffer)
+{
+	lba_init_one(lba);
+	
+	port_byte_out(io_base + ATA_CMD_REG, ATA_CMD_WRITE_PIO); //Read with retry
+	
+	ata_poll(io_base);
+	if (timeout > TIMEOUT)
+	{
+		return;
+	}
+
+	for (uint16_t i = 0; i < 256; i++)
+	{
+		port_word_out(io_base + ATA_DATA_REG, *(uint16_t*)(buffer + i * 2));
+	}
+	ata_400ns_delay();
+}
+
+void lba_write(uint32_t lba, uint32_t sectors, uint8_t* buffer)
+{
+	for (uint32_t i = 0; i < sectors; i++)
+	{
+		lba_write_one(lba + i, buffer);
 		if (timeout > TIMEOUT)
 		{
 			i--; //retry on timeout

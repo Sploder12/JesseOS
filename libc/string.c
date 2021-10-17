@@ -73,6 +73,17 @@ int strcmp(char s1[], char s2[]) {
     return s1[i] - s2[i];
 }
 
+
+void strcpy(char src[], char* dst)
+{
+	uint16_t i = 0;
+	while (src[i] != '\0')
+	{
+		dst[i] = src[i];
+		i++;
+	}
+}
+
 int stoi(char s[])
 {
 	unsigned int i = 0;

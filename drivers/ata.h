@@ -74,5 +74,8 @@
 void lba_read(uint32_t lba, uint32_t sectors, uint8_t* buffer);
 void lba_read_one(uint32_t lba, uint8_t* buffer);
 
+void lba_write(uint32_t lba, uint32_t sectors, uint8_t* buffer);
+void lba_write_one(uint32_t lba, uint8_t* buffer);
+
 void initialize_ata();
 #endif

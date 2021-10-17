@@ -10,6 +10,7 @@ void memset(void *dest, int val, uint32_t len);
 void initialize_heap(uint32_t kernel_end);
 void* kmalloc(size_t size);
 void kfree(void* ptr);
+void* krealloc(void* ptr, size_t size);
 
 #define HEAP_DEBUG
 #ifdef HEAP_DEBUG

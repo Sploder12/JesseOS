@@ -89,6 +89,18 @@ void parse_shell_command(char* input)
     {
     	ls();
     }
+    else if (strcmp(input, "fsflush") == 0)
+    {
+    	save_state();
+    }
+    else if (strcmp(input, "folder") == 0)
+    {
+    	create_folder(input+7);
+    }
+    else if (strcmp(input, "cd") == 0)
+    {
+    	cd(input+3);
+    }
 }
 
 void user_input(char *input) {
