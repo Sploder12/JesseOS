@@ -50,8 +50,16 @@ root can technically be accessed with 0xff but that won't work if root has 255 c
 instead root() can be used
 */
 
-void* fs_root;
-void* fs_current;
+typedef struct {
+	uint8_t type;
+	void* parent; //should be hfolder* but oh well
+	uint8_t childCnt;
+	char* name;
+	void** children; //pointer to array of children pointers
+} __attribute__((packed)) hfolder;
+
+hfolder* fs_root;
+hfolder* fs_current;
 
 void create_folder(char name[])
 {
@@ -59,47 +67,20 @@ void create_folder(char name[])
 	char* pname = kmalloc(namel);
 	strcpy(name, pname);
 	
-	void* newfolder = kmalloc(10);
-	*(uint8_t*)(newfolder) = 0;    //type
-	*(uint8_t*)(newfolder + 5) = 0;//child cnt
-	*(uint32_t*)(newfolder + 6) = (uint32_t)pname;
+	hfolder* newfolder = kmalloc(sizeof(hfolder));
+	newfolder->type = 0;
+	newfolder->childCnt = 0;
+	newfolder->name = pname;
 	
+	uint8_t oFolderCnt = fs_current->childCnt;
+	void** resizedChilds = krealloc(fs_current->children, sizeof(void*) * (oFolderCnt + 1)); //add 4 bytes to parent
 	
-	uint8_t oFolderCnt = *(uint8_t*)(fs_current + 5);
-	void* rParent = krealloc(fs_current, 14 + oFolderCnt*4); //add 4 bytes to parent
+	newfolder->parent = fs_current;
 	
-	*(uint32_t*)(newfolder + 1) = (uint32_t)rParent;
-	*(uint32_t*)(rParent + 10 + oFolderCnt*4) = (uint32_t)newfolder;
-	*(uint8_t*)(rParent + 5) += 1;
+	resizedChilds[oFolderCnt] = newfolder;
+	fs_current->childCnt += 1;
 	
-	//update parent's folders parents
-	for (uint16_t i = 0; i < oFolderCnt; i++)
-	{
-		void* oFolder = (void*)*(uint32_t*)(rParent + 10 + i*4);
-		*(uint32_t*)(oFolder+1) = (uint32_t)rParent;
-	}
-	
-	if (fs_current == fs_root)
-	{
-		fs_root = rParent;
-	}
-	else
-	{
-		//update location for parent of parent
-		void* parentParent = (void*)*(uint32_t*)(rParent+1);
-		uint8_t uncleCnt = *(uint8_t*)(parentParent + 5);
-		
-		for (uint16_t i = 0; i < uncleCnt; i++)
-		{
-			if (fs_current == (void*)*(uint32_t*)(parentParent + 10 + i*4))
-			{
-				*(uint32_t*)(parentParent + 10 + i*4) = (uint32_t)rParent;
-				break;
-			}
-		}
-		
-	}
-	fs_current = rParent;
+	fs_current->children = resizedChilds;
 }
 
 uint16_t save_node(void* node, void* buffer)
@@ -107,26 +88,24 @@ uint16_t save_node(void* node, void* buffer)
 	uint8_t type = *(uint8_t*)(node);
 	*(uint8_t*)(buffer) = type;
 	
-	switch (type)
+	switch (type) //ah yes "polymorphism"
 	{
 		case 0:
 		{
-			uint8_t childrenNum = *(uint8_t*)(node + 5);
+			hfolder* fnode = (hfolder*)node;
+			uint8_t childrenNum = fnode->childCnt;
 			*(uint8_t*)(buffer + 1) = childrenNum;
 			
-			int nlen = strlen((void*)*(uint32_t*)(node + 6)) + 1;
+			int nlen = strlen(fnode->name) + 1;
 			
-			
-			void* str = (void*)*(uint32_t*)(node + 6);
-
-			strcpy(str, buffer+2);
+			strcpy(fnode->name, buffer+2);
 			
 			uint16_t coff = 2 + nlen + childrenNum*2;
 			
 			for (uint16_t i = 0; i < childrenNum; i++)
 			{
 				*(uint16_t*)(buffer + 2 + nlen + i*2) = coff;
-				void* child = (void*)*(uint32_t*)(node + 10 + i* 4);
+				void* child = fnode->children[i];
 				
 				coff += save_node(child, buffer + coff);
 			}
@@ -135,12 +114,14 @@ uint16_t save_node(void* node, void* buffer)
 		}
 		case 1:
 		{
+		/* @TODO
 			*(uint32_t*)(buffer + 1) = *(uint32_t*)(node + 5);
 			*(uint32_t*)(buffer + 5) = *(uint32_t*)(node + 9);
 			
 			uint16_t nlen = strlen((char*)(node + 13)) + 1;
 			strcpy((char*)*(uint32_t*)(node+13), buffer+9);
 			return nlen + 9;
+			*/
 		}
 	}
 }
@@ -152,7 +133,7 @@ void save_state()
 	void* buffer = kmalloc(512 * FS_TABLE_SECTORS); 
 
 	//step two: write data
-	uint8_t childrenNum = *(uint8_t*)(fs_root + 5);
+	uint8_t childrenNum = fs_root->childCnt;
 	*(uint8_t*)(buffer) = childrenNum;
 				
 	uint16_t coff = 1 + childrenNum*2;
@@ -160,7 +141,7 @@ void save_state()
 	for (uint16_t i = 0; i < childrenNum; i++)
 	{
 		*(uint16_t*)(buffer + 1 + i*2) = coff;
-		void* child = (void*)*(uint32_t*)(fs_root + 10 + i * 4);
+		void* child = fs_root->children[i];
 				
 		coff += save_node(child, buffer + coff);
 	}
@@ -174,24 +155,22 @@ void save_state()
 
 void ls()
 {
-	void* nameloc = (void*)*(uint32_t*)(fs_current + 6);
 	kprint("Currently in ");
 	kprint_color(LBLUE_TEXT);
 	
-	kprint(nameloc);
+	kprint(fs_current->name);
 	
-	void* parent = (void*)*(uint32_t*)(fs_current + 1);
+	hfolder* parent = fs_current->parent;
 	while (parent != 0x0) //Yes, the full path is reversed
 	{
-		nameloc = (char*)*(uint32_t*)(parent + 6);
 		kprint("-");
-		kprint(nameloc);
-		parent = (void*)*(uint32_t*)(parent + 1);
+		kprint(parent->name);
+		parent = parent->parent;
 	}
 	
 	kprint(".\n");
 	
-	uint8_t children = *(uint8_t*)(fs_current + 5);
+	uint8_t children = fs_current->childCnt;
 	kprint_color(GRAY_TEXT);
 	if (children == 0)
 	{
@@ -203,45 +182,49 @@ void ls()
 		char idx[4] = "";
 		int_to_ascii(i, idx);
 		kprint(idx);
-		kprint(" : ");
+		kprint(": ");
 		
-		void* childloc = (void*)*(uint32_t*)(fs_current + 10 + i * 4);
-		uint8_t childtype = *(uint8_t*)(childloc);
+		void* child = fs_current->children[i];
+		
+		uint8_t childtype = *(uint8_t*)(child);
 		switch (childtype)
 		{
 			case 0:
-				nameloc = (void*)*(uint32_t*)(childloc + 6);
+			{
+				hfolder* fc = (hfolder*)child;
+				kprint(fc->name);
 				break;
+			}
 			case 1:
-				nameloc = (void*)*(uint32_t*)(childloc + 13);
+			{
+				kprint(child + 13);
 				break;
+			}
 		}
-		kprint(nameloc);
+		
 		kprint("    ");
 	}
 	kprint_color(WHITE_ON_BLACK);
 	kprint("\n");
-	
-	void (*funPtr)() = (void*)*(uint32_t*)(nameloc);
 }
 
 void cd(char dir[])
 {
 	if (strcmp(dir, "..") == 0 && fs_current != fs_root)
 	{
-		fs_current = (void*)*(uint32_t*)(fs_current+1);
+		fs_current = fs_current->parent;
 		return;
 	}
 
-	uint8_t children = *(uint8_t*)(fs_current + 5);
+	uint8_t children = fs_current->childCnt;
 	for (uint16_t i = 0; i < children; i++)
 	{
 
-		void* childloc = (void*)*(uint32_t*)(fs_current + 10 + i * 4);
-		uint8_t childtype = *(uint8_t*)(childloc);
-		if(childtype == 0 && strcmp((char*)*(uint32_t*)(childloc+6), dir) == 0)
+		hfolder* child = fs_current->children[i];
+		uint8_t childtype = child->type;
+		if(childtype == 0 && strcmp(child->name, dir) == 0)
 		{
-			fs_current = childloc;
+			fs_current = child;
 			return;
 		}
 	}
@@ -255,7 +238,7 @@ void cd(char dir[])
 		return;
 	}
 	
-	fs_current = (void*)*(uint32_t*)(fs_current+10+(idx*4));
+	fs_current = fs_current->children[idx];
 }
 
 void* alloc_name(void* loc)
@@ -266,6 +249,7 @@ void* alloc_name(void* loc)
 	return nameloc;
 }
 
+//nodeptr is the buffer NOT a hfolder
 void* create_filesystem(void* nodeptr, void* parent)
 {
 	const uint8_t type = *(uint8_t*)nodeptr;
@@ -275,22 +259,27 @@ void* create_filesystem(void* nodeptr, void* parent)
 		{
 			const uint8_t children = *(uint8_t*)(nodeptr+1);
 			
-			void* node = kmalloc(10 + 4 * children);
-			*(uint8_t*)(node) = type;
-			*(uint32_t*)(node + 1) = (uint32_t)parent;
-			*(uint8_t*)(node + 5) = children;
-			*(uint32_t*)(node + 6) = (uint32_t)alloc_name(nodeptr + 2);
+			hfolder* node = kmalloc(sizeof(hfolder));
+			node->type = type;
+			node->parent = parent;
+			node->childCnt = children;
+			node->name = alloc_name(nodeptr + 2);
+			
+			void** childrenAry = kmalloc(sizeof(void*) * children);
+			
 			int slen = strlen(nodeptr + 2) + 1;
 			for (uint16_t i = 0; i < children; i++)
 			{
 				uint16_t coffset = *(uint16_t*)(nodeptr+2+slen+i*2);
 				
-				*(uint32_t*)(node + 10 + i*4) = (uint32_t)create_filesystem(nodeptr + coffset, node);
+				childrenAry[i] = create_filesystem(nodeptr + coffset, node);
 			}
+			node->children = childrenAry;
 			return node;
 		}
 		case 1:
 		{
+		/* @TODO
 			void* node = kmalloc(17);
 			*(uint8_t*)(node) = type;
 			*(uint32_t*)(node + 1) = (uint32_t)parent;
@@ -299,8 +288,10 @@ void* create_filesystem(void* nodeptr, void* parent)
 			*(uint32_t*)(node + 13) = (uint32_t)alloc_name(nodeptr + 9); //file name
 			
 			return node;
+			*/
 		}
 	}
+	
 }
 
 void init_filesystem()
@@ -312,28 +303,29 @@ void init_filesystem()
 	
 	uint8_t children = *(uint8_t*)buffer;
 	
-	void* name = kmalloc(5);
-	*(char*)(name) = 'r';
-	*(char*)(name+1) = 'o';
-	*(char*)(name+2) = 'o';
-	*(char*)(name+3) = 't';
-	*(char*)(name+4) = '\0';
+	char* name = kmalloc(5);
+	name[0] = 'r';
+	name[1] = 'o';
+	name[2] = 'o';
+	name[3] = 't';
+	name[4] = '\0';
 	
-	//10 bytes header, 4*children bytes data
-	void* root = kmalloc(10 + 4 * children);
-	*(uint8_t*)(root) = 0x0; 		 //type
-	*(uint32_t*)(root + 1) = 0x00; 	 //parent
-	*(uint8_t*)(root + 5) = children;//children
+	hfolder* root = kmalloc(sizeof(hfolder));
+	root->type = 0x0;
+	root->parent = (void*)0x00; 	
+	root->childCnt = children;
 	
-	*(uint32_t*)(root + 6) = (uint32_t)name; 		 //filename
+	root->name = name; 		 
 	
+	void** childrenAry = kmalloc(sizeof(void*) * children);
 	
 	for (uint16_t i = 0; i < children; i++) //children addresses
 	{
 		uint16_t coffset = *(uint16_t*)(buffer + 1 + i*2);
-		*(uint32_t*)(root + 10 + i*4) = (uint32_t)create_filesystem(buffer + coffset, root);
+		childrenAry[i] = create_filesystem(buffer + coffset, root);
 	}
 	
+	root->children = childrenAry;
 	kfree(buffer);
 	
 	fs_root = root;
