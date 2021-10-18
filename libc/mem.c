@@ -12,130 +12,138 @@ void memset(void *dest, int val, uint32_t len) {
     for ( ; len != 0; len--) *temp++ = val;
 }
 
-uint32_t heap_begin = 0;
+typedef struct __attribute__((packed)) heap_meta
+{
+	size_t size;
+	struct heap_meta* next;
+	struct heap_meta* prev;
+} __attribute__((packed)) heap_meta;
+
+heap_meta* heap_begin = 0;
 size_t heap_size = 0;
 
 void initialize_heap(uint32_t kernel_end)
 {
-	heap_begin = kernel_end + 0x1000;
-	*(uint32_t*)(heap_begin) = 0x00000000; //ensure size is 0
-	*(uint32_t*)(heap_begin+4) = 0x00000000; //ensure next is nullptr
-	*(uint32_t*)(heap_begin+8) = 0x00000000; //ensure previous is nullptr
+	heap_begin = (heap_meta*)(kernel_end + 0x1000);
+	heap_begin->size = 0;
+	heap_begin->next = 0x0; 
+	heap_begin->prev = 0x0; 
 }
 
 //if size is 0 then the block is free
 //next - ptr can be used to find size of free block
-void* findNextFree(void* ptr, size_t nsize)
-{
-	size_t size = *(size_t*)(ptr-12);
-	void* next = (void*)*(uint32_t*)(ptr-8);
+heap_meta* findNextFree(heap_meta* ptr, size_t nsize)
+{	
+	if (ptr->next == 0x0) return ptr;
 	
-	if (next == 0) return ptr;
+	if (ptr->size == 0 && (void*)ptr->next - (void*)ptr > nsize + sizeof(heap_meta)) return ptr;	
 	
-	if (size == 0 && next - ptr > nsize + 12) return ptr;	
-	
-	return findNextFree(next, nsize);
+	return findNextFree(ptr->next, nsize);
 }
 
 void* kmalloc(size_t size)
 {	
-	void* free_mem_addr = findNextFree((void*)(heap_begin + 12), size);
+	if (size == 0) return 0x0;
+
+	heap_meta* free_mem_addr = findNextFree(heap_begin, size);
 	
+	heap_meta* oldNext = free_mem_addr->next;
 	
-	uint32_t oldNext = *(uint32_t*)(free_mem_addr-8);
+	free_mem_addr->size = size;
 	
-	*(size_t*)(free_mem_addr-12) = size;
-	*(uint32_t*)(free_mem_addr-8) = (uint32_t)(free_mem_addr + size + 12);
+	heap_meta* newNext = (heap_meta*)((void*)(free_mem_addr) + size + sizeof(heap_meta));
+	free_mem_addr->next = newNext;
 	
+	newNext->next = oldNext;
+	newNext->prev = (void*)(free_mem_addr) + sizeof(heap_meta);
 	
-	//*(size_t*)(free_mem_addr+size+4) = 0;
+	heap_size += size + sizeof(heap_meta);
+	memset(free_mem_addr+sizeof(heap_meta), 0, size); //clean up leftovers
 	
-	*(uint32_t*)(free_mem_addr+size+4) = oldNext;
-	*(uint32_t*)(free_mem_addr+size+8) = (uint32_t)(free_mem_addr);
-	
-	
-	heap_size += size + 12;
-	memset(free_mem_addr, 0, size); //clean up leftovers
-	
-    return free_mem_addr;
+    return (void*)(free_mem_addr) + sizeof(heap_meta);
 }
 
 void kfree(void* ptr)
 {
-	size_t freedSize = *(size_t*)(ptr-12); 
-	void* next = (void*)*(uint32_t*)(ptr-8);
-	void* prev = (void*)*(uint32_t*)(ptr-4);
+	if (ptr == 0x0) return;
+
+	heap_meta* meta = (heap_meta*)(ptr - sizeof(heap_meta));
+
+	size_t freedSize = meta->size; 
+	if (freedSize == 0) return;
 	
 	//Clean crumbs
-	//If you don't metadata corruption can occur and that's no good
 	memset(ptr, 0, freedSize);
-	*(size_t*)(ptr-12) = 0;
+	meta->size = 0;
 	
-	size_t nsize = *(size_t*)(next-12);
-	size_t psize = *(size_t*)(prev-12);
+	heap_meta* next = meta->next;
+	heap_meta* prev = meta->prev;
 	
-	
-	if (nsize == 0)
+	if (next->size == 0)
 	{
-		*(uint32_t*)(ptr-8) = *(uint32_t*)(next-8);
+		meta->next = next->next;
 		
-		*(uint32_t*)(next-8) = 0x0;
-		*(uint32_t*)(next-4) = 0x0;
+		next->next = 0x0;
+		next->prev = 0x0;
 	}
 	
-	if (psize == 0)
+	if (prev->size == 0)
 	{
-		*(uint32_t*)(next-4) = (uint32_t)(prev);
-		*(uint32_t*)(prev-8) = *(uint32_t*)(ptr-8);
+		next->prev = prev;
+		prev->next = meta->next;
+		
+		meta->next = 0x0;
+		meta->prev = 0x0;
 	}
 	
-	heap_size -= (freedSize + 12);
+	heap_size -= (freedSize + sizeof(heap_meta));	
 }
 
 void* krealloc(void* ptr, size_t size)
 {
-	size_t curSize = *(size_t*)(ptr-12);
-	
+	if (ptr == 0x0) return 0x0;
+
+	heap_meta* meta = (heap_meta*)(ptr - sizeof(heap_meta));
+
+	size_t curSize = meta->size;
 	if (size < curSize)
 	{
-		*(size_t*)(ptr-12) = size;
+		meta->size = size;
 		return ptr;
 	}
 	
-	void* next = (void*)*(uint32_t*)(ptr-8);
-	size_t nsize = *(size_t*)(next-12);
+	heap_meta* next = meta->next;
 	
-	while (next != 0x0 && nsize == 0)
+	while (next != 0x0 && next->size == 0)
 	{
-		next = (void*)*(uint32_t*)(next-8);
-		nsize = *(size_t*)(next-12);
+		next = next->next;
 	}
 	
-	if (next == 0x0 || next - ptr > size + 12)
+	if (next == 0x0 || (void*)next - (void*)ptr > size)
 	{
-		*(size_t*)(ptr-12) = size;
-		*(size_t*)(ptr-8) += size - curSize;
+		meta->size = size;
+		meta->next = (heap_meta*)((void*)(meta->next) + size - curSize);
 		
-		*(uint32_t*)(ptr+size+4) = (uint32_t)next;
-		*(uint32_t*)(ptr+size+8) = (uint32_t)(ptr);
+		meta->next->next = next;
+		meta->next->prev = meta;
 		return ptr;
 	}
 	
 	void* newp = kmalloc(size);
 	memcpy(ptr, newp, size);
 	kfree(ptr);
-	return newp;
+	return newp;	
 }
+
 
 #ifdef HEAP_DEBUG
 #include "string.h"
 #include "../drivers/screen.h"
-
-void dump_blocks(void* block)
+void dump_blocks(heap_meta* block)
 {
-	size_t size = *(size_t*)(block-12);
-	void* next = (void*)*(uint32_t*)(block-8);
-	void* prev = (void*)*(uint32_t*)(block-4);
+	size_t size = block->size;
+	heap_meta* next = block->next;
+	heap_meta* prev = block->prev;
 	
 	kprint_color(GREEN_TEXT);
 	char sizestr[16] = "";
@@ -157,7 +165,7 @@ void dump_blocks(void* block)
 	
 	/*
 	kprint_color(GRAY_TEXT);
-	for (size_t i = 0; i < size; i++)
+	for (size_t i = 0; i < size + 12; i++)
 	{
 		char hexstr[16] = "";
 		hex_to_ascii(*(char*)(block+i), hexstr);
@@ -171,48 +179,12 @@ void dump_blocks(void* block)
 
 void dump_heap()
 {
-	
 	//clear_screen();
 	char hsize[16] = "";
 	int_to_ascii(heap_size, hsize);
 	kprint("Heap size: ");
 	kprint(hsize);
 	kprint(" bytes \n");
-	dump_blocks((void*)(heap_begin + 12));
-	
-}
-
-void dump_mem(void* block)
-{
-	size_t size = *(size_t*)(block-12);
-	void* next = (void*)*(uint32_t*)(block-8);
-	void* prev = (void*)*(uint32_t*)(block-4);
-	
-	kprint_color(GREEN_TEXT);
-	char sizestr[16] = "";
-	int_to_ascii(size, sizestr);
-	kprint(sizestr);
-	kprint(" ");
-	
-	kprint_color(RED_TEXT);
-	char nextstr[16] = "";
-	hex_to_ascii((uint32_t)next, nextstr);
-	kprint(nextstr);
-	kprint(" ");
-	
-	kprint_color(BLUE_TEXT);
-	char prevstr[16] = "";
-	hex_to_ascii((uint32_t)prev, prevstr);
-	kprint(prevstr);
-	kprint(" ");
-	
-	kprint_color(GRAY_TEXT);
-	for (size_t i = 0; i < size; i++)
-	{
-		char hexstr[16] = "";
-		hex_to_ascii(*(char*)(block+i), hexstr);
-		kprint(hexstr);
-		kprint(" ");
-	}
+	dump_blocks(heap_begin);
 }
 #endif
